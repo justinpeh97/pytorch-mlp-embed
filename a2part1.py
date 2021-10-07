@@ -52,9 +52,6 @@ def question6(data):
     for i in range(len(data)):
         mat[i,0:data[i].size()[0]] = data[i]
     return mat
-    
-    return None
-
 
 def question7(w, x, b):
     """

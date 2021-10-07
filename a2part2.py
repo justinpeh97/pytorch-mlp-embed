@@ -11,6 +11,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
+
 torch.manual_seed(0)
 
 
@@ -30,24 +31,58 @@ class LangDataset(Dataset):
             label_path (string, optional): Path to the label file.
             vocab (string, optional): You may use or not use this
         """
-        self.texts = None
-        self.labels = None
+        with open(text_path) as f:
+            self.texts = f.read().splitlines()
+        
+        self.bigrams = []
+        if vocab == None:
+          index = 1
+          
+          self.unique_bi = {} 
+          for line in self.texts:
+              for i in range(len(line)-1):
+                  if line[i:i+2] not in self.unique_bi.keys():
+                      self.unique_bi[line[i:i+2]] = index
+                      index += 1
+        else:
+          self.unique_bi = vocab
 
+
+                
+        for line in self.texts:
+            bigrams = []
+            for i in range(len(line)-1):
+                bigram = line[i:i+2]
+                if bigram in self.unique_bi.keys():
+                  bigrams.append(self.unique_bi[line[i:i+2]])
+                else:
+                  bigrams.append(0)
+            self.bigrams.append(bigrams)
+
+        self.label_path = label_path
+        if label_path != None:
+            
+            with open(label_path) as f:
+                self.labels = f.read().splitlines()
+            self.unique_labels = []
+            for label in self.labels:
+                if label not in self.unique_labels:
+                    self.unique_labels.append(label)
+                
     def vocab_size(self):
         """
         A function to inform the vocab size. The function returns two numbers:
             num_vocab: size of the vocabulary
             num_class: number of class labels
         """
-        num_vocab = None
-        num_class = None
-        return num_vocab, num_class
+
+        return len(self.unique_bi.keys()) + 1, len(self.unique_labels)
     
     def __len__(self):
         """
         Return the number of instances in the data
         """
-        return None
+        return len(self.texts)
 
     def __getitem__(self, i):
         """
@@ -58,12 +93,19 @@ class LangDataset(Dataset):
         
         DO NOT pad the tensor here, do it at the collator function.
         """
-        text = None
-        label = None
         
-        return text, label
+        if self.label_path == None:
+            return torch.tensor(self.bigrams[i]), torch.tensor(0)
+        else:
+            label = self.labels[i]
+            label_index = self.unique_labels.index(label)     
+            return torch.tensor(self.bigrams[i]), torch.tensor(label_index)
 
 
+def mean_nopad(x):
+    mask = x != 0
+    return (x*mask).sum(dim=1)/mask.sum(dim=1)
+    
 class Model(nn.Module):
     """
     Define a model that with one embedding layer, a hidden
@@ -72,25 +114,44 @@ class Model(nn.Module):
     """
     def __init__(self, num_vocab, num_class, dropout=0.3):
         super().__init__()
-        # define your model here
+        w_dim = 50
+        size_layer = 100
+        self.embeddings = torch.nn.Embedding(num_vocab, w_dim, padding_idx = 0)
+        self.linear1 = torch.nn.Linear(w_dim, size_layer)
+        self.linear2 = torch.nn.Linear(size_layer, num_class)
+        self.ReLU = torch.nn.ReLU() 
+        self.dropout = nn.Dropout(dropout)
+        self.softmax = nn.Softmax()
 
     def forward(self, x):
-        # define the forward function here
+        
+        h0 = self.embeddings(x.long())
+        h0 = self.dropout(h0)
+        h0 = mean_nopad(h0)
+        h1 = self.linear1(h0)
+        h1 = self.ReLU(h1)
+        h1 = self.dropout(h1)
+        h2 = self.linear2(h1)
 
-        return 
+        return h2
 
 
 def collator(batch):
+
     """
     Define a function that receives a list of (text, label) pair
     and return a pair of tensors:
         texts: a tensor that combines all the text in the mini-batch, pad with 0
         labels: a tensor that combines all the labels in the mini-batch
     """
-    texts = None
-    labels = None
+    texts, labels = zip(*batch)
+    max_len = max([row.size()[0] for row in texts])
+    features = torch.zeros((len(texts), max_len))
+    for i in range(len(texts)):
+        features[i, 0:texts[i].size()[0]] = texts[i]
+    labels = torch.tensor([sample[1] for sample in batch] )
     
-    return texts, labels
+    return features, labels
 
 
 def train(model, dataset, batch_size, learning_rate, num_epoch, device='cpu', model_path=None):
@@ -101,8 +162,8 @@ def train(model, dataset, batch_size, learning_rate, num_epoch, device='cpu', mo
     data_loader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator, shuffle=True)
 
     # assign these variables
-    criterion = None
-    optimizer = None
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     start = datetime.datetime.now()
     for epoch in range(num_epoch):
@@ -114,17 +175,17 @@ def train(model, dataset, batch_size, learning_rate, num_epoch, device='cpu', mo
             labels = data[1].to(device)
 
             # zero the parameter gradients
-
+            optimizer.zero_grad()
             # do forward propagation
-
+            yhat = model(texts)
             # do loss calculation
-
+            loss = criterion(yhat, labels)
             # do backward propagation
-
+            loss.backward()
             # do parameter optimization step
-
+            optimizer.step()
             # calculate running loss value for non padding
-
+            running_loss += loss
             # print loss value every 100 steps and reset the running loss
             if step % 100 == 99:
                 print('[%d, %5d] loss: %.3f' %
@@ -136,8 +197,13 @@ def train(model, dataset, batch_size, learning_rate, num_epoch, device='cpu', mo
     # save the model weight in the checkpoint variable
     # and dump it to system on the model_path
     # tip: the checkpoint can contain more than just the model
-    checkpoint = None
-    torch.save(checkpoint, model_path)
+    torch.save({'epoch':epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict':optimizer.state_dict(),
+                'loss':loss,
+                'vocab': dataset.unique_bi,
+                'num_vocab_num_class': dataset.vocab_size()},
+               model_path)
 
     print('Model saved in ', model_path)
     print('Training finished in {} minutes.'.format((end - start).seconds / 60.0))
@@ -152,7 +218,9 @@ def test(model, dataset, class_map, device='cpu'):
             texts = data[0].to(device)
             outputs = model(texts).cpu()
             # get the label predictions
-
+            for output in outputs:
+                label = class_map[int(torch.argmax(output))]                
+                labels.append(label)
     return labels
 
 
@@ -166,26 +234,30 @@ def main(args):
     assert args.train or args.test, "Please specify --train or --test"
     if args.train:
         assert args.label_path is not None, "Please provide the labels for training using --label_path argument"
-        dataset = LangDataset(args.text_path, args.label_path)
-        num_vocab, num_class = dataset.vocab_size()
+        train_dataset = LangDataset(args.text_path, args.label_path)
+        num_vocab, num_class = train_dataset.vocab_size()
         model = Model(num_vocab, num_class).to(device)
         
         # you may change these hyper-parameters
-        learning_rate = None
-        batch_size = None
-        num_epochs = None
+        learning_rate = 0.001
+        batch_size = 20
+        num_epochs = 50
 
-        train(model, dataset, batch_size, learning_rate, num_epochs, device, args.model_path)
+        train(model, train_dataset, batch_size, learning_rate, num_epochs, device, args.model_path)
     if args.test:
         assert args.model_path is not None, "Please provide the model to test using --model_path argument"
         # the lang map should map the class index to the language id (e.g. eng, fra, etc.)
-        lang_map = None
-        
-        # create the test dataset object using LangDataset class
-
+        lang_map = {0:'eng', 1:'deu', 2:'fra', 3:'ita', 4:'spa'}
 
         # initialize and load the model
+        checkpoint = torch.load(args.model_path)
+        vocab_output = checkpoint['vocab']
+        num_vocab, num_class = checkpoint['num_vocab_num_class']
+        model = Model(num_vocab, num_class).to(device)
+        model.load_state_dict(checkpoint['model_state_dict'])
 
+        # create the test dataset object using LangDataset class
+        dataset = LangDataset(args.text_path, None, vocab = vocab_output)
 
         # run the prediction
         preds = test(model, dataset, lang_map, device)
