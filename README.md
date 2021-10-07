@@ -18,10 +18,12 @@ Batch size = 20
 The model could achieve 100% accuracy with under 1 minute of training.
 
 
-## RUN
+#### RUN
 
-`python a2part2.py --train --text_path x_train.txt --label_path y_train.txt --model_path model.pt
+``
+python a2part2.py --train --text_path x_train.txt --label_path y_train.txt --model_path model.pt
 
 python a2part2.py --test --text_path x_test.txt --model_path model.pt --output_path out.txt
 
-python eval.py out.txt y_test.txt`
+python eval.py out.txt y_test.txt
+``
